@@ -1,0 +1,87 @@
+name: Deploy to Staging
+
+on:
+  workflow_dispatch:  # Manual trigger
+    inputs:
+      terraform_only:
+        description: 'Deploy only Terraform changes'
+        required: false
+        default: 'false'
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging  # GitHub environment for protection
+
+    permissions:
+      id-token: write  # For AWS OIDC
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-oidc
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build backend
+        if: ${{ github.event.inputs.terraform_only != 'true' }}
+        working-directory: backend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build frontend
+        if: ${{ github.event.inputs.terraform_only != 'true' }}
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy with Terraform
+        working-directory: terraform
+        env:
+          TF_VAR_environment: staging
+          TF_VAR_rds_password: ${{ secrets.RDS_PASSWORD }}
+          TF_VAR_tmdb_api_key: ${{ secrets.TMDB_API_KEY }}
+          TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+        run: |
+          terraform init -upgrade
+          terraform plan -var-file=env/staging.tfvars -out=tfplan
+          terraform apply tfplan
+
+      - name: Deploy frontend to S3
+        if: ${{ github.event.inputs.terraform_only != 'true' }}
+        run: |
+          aws s3 sync frontend/dist/ s3://castmaster-frontend-staging/ --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
+            --query "Distributions[?Comment=='castmaster-cdn'].Id" \
+            --output text)
+          aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*"
+
+      - name: Post deployment summary
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Deployed to staging!\nAPI: `https://staging-api.castmaster.example.com`\nWeb: `https://staging.castmaster.example.com`'
+            })
