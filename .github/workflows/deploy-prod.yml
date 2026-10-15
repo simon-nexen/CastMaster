@@ -1,25 +1,43 @@
-name: Deploy to Staging
+name: Deploy to Production
 
 on:
   workflow_dispatch:  # Manual trigger
     inputs:
-      terraform_only:
-        description: 'Deploy only Terraform changes'
+      require_approval:
+        description: 'Require additional approval'
         required: false
-        default: 'false'
+        type: boolean
+        default: true
 
 jobs:
   deploy:
-    name: Deploy to Staging
+    name: Deploy to Production
     runs-on: ubuntu-latest
-    environment: staging  # GitHub environment for protection
-
+    environment:
+      name: production
+      url: https://castmaster.com  # Display in GitHub UI
+    
     permissions:
-      id-token: write  # For AWS OIDC
+      id-token: write
       contents: read
+      deployments: write
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create deployment
+        uses: actions/github-script@v7
+        id: deployment
+        with:
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'production',
+              required_contexts: []
+            });
+            return deployment.data.id;
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -37,14 +55,12 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Build backend
-        if: ${{ github.event.inputs.terraform_only != 'true' }}
         working-directory: backend
         run: |
           npm ci
           npm run build
 
       - name: Build frontend
-        if: ${{ github.event.inputs.terraform_only != 'true' }}
         working-directory: frontend
         run: |
           npm ci
@@ -53,19 +69,18 @@ jobs:
       - name: Deploy with Terraform
         working-directory: terraform
         env:
-          TF_VAR_environment: staging
+          TF_VAR_environment: prod
           TF_VAR_rds_password: ${{ secrets.RDS_PASSWORD }}
           TF_VAR_tmdb_api_key: ${{ secrets.TMDB_API_KEY }}
           TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
         run: |
           terraform init -upgrade
-          terraform plan -var-file=env/staging.tfvars -out=tfplan
+          terraform plan -var-file=env/prod.tfvars -out=tfplan
           terraform apply tfplan
 
       - name: Deploy frontend to S3
-        if: ${{ github.event.inputs.terraform_only != 'true' }}
         run: |
-          aws s3 sync frontend/dist/ s3://castmaster-frontend-staging/ --delete
+          aws s3 sync frontend/dist/ s3://castmaster-frontend/ --delete
 
       - name: Invalidate CloudFront cache
         run: |
@@ -74,14 +89,37 @@ jobs:
             --output text)
           aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*"
 
-      - name: Post deployment summary
-        if: success()
+      - name: Create deployment status
         uses: actions/github-script@v7
+        if: success()
         with:
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            github.rest.repos.createDeploymentStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Deployed to staging!\nAPI: `https://staging-api.castmaster.example.com`\nWeb: `https://staging.castmaster.example.com`'
-            })
+              deployment_id: ${{ steps.deployment.outputs.result }},
+              state: 'success',
+              environment_url: 'https://castmaster.com',
+              description: 'Production deployment successful'
+            });
+
+      - name: Slack notification
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "⚠️ Production deployment FAILED",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*CastMaster Production Deploy Failed*\nCommit: ${{ github.sha }}\nBy: ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
