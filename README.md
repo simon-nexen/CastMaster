@@ -21,37 +21,42 @@ A web platform for collecting and trading actor/actress cards based on TMDB data
 ### Local Development
 
 1. Clone repository
-   \`\`\`bash
-   git clone https://github.com/username/castmaster.git
-   cd castmaster
-   \`\`\`
+
+```bash
+git clone https://github.com/username/castmaster.git
+cd castmaster
+```
 
 2. Install dependencies
-   \`\`\`bash
-   make setup
-   \`\`\`
+
+```bash
+make setup
+```
 
 3. Setup environment
-   \`\`\`bash
-   cp .env.example .env
-   # Edit .env with your settings
-   \`\`\`
+
+```bash
+cp .env.example .env
+# Edit .env with your settings
+```
 
 4. Start development servers
-   \`\`\`bash
-   make dev
-   \`\`\`
+
+```bash
+make dev
+```
 
 5. Open browser
-   \`\`\`
-   http://localhost:5173 (React)
-   \`\`\`
+
+```
+http://localhost:5173 (React)
+```
 
 ## Testing
 
-\`\`\`bash
+```bash
 make test
-\`\`\`
+```
 
 ## Deployment
 
